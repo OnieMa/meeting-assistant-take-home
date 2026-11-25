@@ -6,7 +6,7 @@ import { jobProof, matches } from './security';
 import type { Env } from './types';
 
 const dayMs = 86_400_000;
-const limits = { workspace: 3, project: 12, connections: 3, questions: 8, speeches: 8 } as const;
+const limits = { workspace: 50, project: 200, connections: 10, questions: 50, speeches: 50 } as const;
 const route = /^\/api\/live\/([a-f0-9-]{36})\/(stream|ask|speech)$/;
 const keepAlive = '{"type":"KeepAlive"}';
 const answerPrompt = `The user is asking during a meeting. Use only the supplied meeting transcript for factual claims

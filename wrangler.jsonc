@@ -38,6 +38,8 @@
 		"binding": "AI"
 	},
 	"vars": {
-		"PUBLIC_ORIGIN": "https://meeting-assistant.maaoyuya.workers.dev"
+		"PUBLIC_ORIGIN": "https://meeting-assistant.maaoyuya.workers.dev",
+		"LLM_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+		"LLM_MODEL": "deepseek-v4.1-flash"
 	}
 }

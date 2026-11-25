@@ -5,6 +5,9 @@ export interface Env {
   AI: Ai;
   APP_MODE?: string;
   PUBLIC_ORIGIN?: string;
+  LLM_BASE_URL?: string;
+  LLM_MODEL?: string;
+  LLM_API_KEY?: string;
   DEEPGRAM_API_KEY?: string;
   JOB_SECRET?: string;
 }
