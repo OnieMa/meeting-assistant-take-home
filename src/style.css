@@ -203,3 +203,15 @@ textarea { min-height: 184px; resize: vertical; font-size: .93rem; }
 .title-edit { max-width: 520px; padding: 13px 15px; margin-top: 12px; }
 .title-edit input { margin-top: 5px; }
 .title-edit .edit-actions { flex-wrap: wrap; }
+
+.detail-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.text-button.delete-action { color: #912f38; }
+.delete-dialog {
+  width: min(440px, calc(100% - 28px)); padding: 23px; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 12px 48px #10251c36;
+}
+.delete-dialog::backdrop { background: #142a245c; }
+.delete-dialog p { line-height: 1.5; margin-top: 8px; color: var(--muted); overflow-wrap: anywhere; }
+.delete-dialog .delete-title { font-weight: 680; color: var(--ink); }
+.delete-dialog .alert { color: #802432; margin-bottom: 0; }
+.delete-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 19px; }

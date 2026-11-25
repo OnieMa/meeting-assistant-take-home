@@ -1,7 +1,8 @@
 import { ApiError, json, smallJson } from './http';
 import { handleLive } from './live';
+import { deleteMeeting } from './deletion';
 import { accessCode, currentWorkspace, hash, jobProof, matches, newSession, normalizedCode, sessionCookie, sessionToken } from './security';
-import { callbackKey, mediaKey, meetingById, partKey } from './types';
+import { callbackKey, mediaKey, meetingById, meetingExists, partKey } from './types';
 import type { Env, Meeting } from './types';
 import { suggestExistingTitle, translateNotes } from './notes';
 export { MeetingProcessing } from './workflow';
@@ -65,9 +66,12 @@ async function audio(env: Env, request: Request, meeting: Meeting) {
 
 async function startJob(env: Env, id: string, expected: Meeting['state']) {
   const attempt = crypto.randomUUID();
-  const queued = await env.DB.prepare(
-    "UPDATE meetings SET state = 'queued', attempt = ?, error = NULL, transcript_parts = 0, duration = NULL WHERE id = ? AND state = ?",
-  ).bind(attempt, id, expected).run();
+  const [queued] = await env.DB.batch([
+    env.DB.prepare(`UPDATE meetings SET state = 'queued', attempt = ?, error = NULL, transcript_parts = 0, duration = NULL
+      WHERE id = ? AND state = ? AND deleted_at IS NULL`).bind(attempt, id, expected),
+    env.DB.prepare(`INSERT INTO meeting_attempts (meeting_id, attempt)
+      SELECT id, attempt FROM meetings WHERE id = ? AND attempt = ?`).bind(id, attempt),
+  ]);
   if (!queued.meta.changes) throw new ApiError(409, 'state_conflict');
   try {
     await env.PROCESS.create({ id: attempt, params: { meetingId: id, attempt } });
@@ -79,7 +83,7 @@ async function startJob(env: Env, id: string, expected: Meeting['state']) {
       await workflow.status();
       return;
     } catch {
-      await env.DB.prepare("UPDATE meetings SET state = 'failed', error = 'start_failed' WHERE id = ? AND attempt = ? AND state = 'queued'")
+      await env.DB.prepare("UPDATE meetings SET state = 'failed', error = 'start_failed' WHERE id = ? AND attempt = ? AND state = 'queued' AND deleted_at IS NULL")
         .bind(id, attempt).run();
     }
   }
@@ -109,7 +113,9 @@ async function upload(request: Request, env: Env, workspace: string, url: URL) {
     throw new ApiError(502, 'upload_failed');
   }
   await startJob(env, id, 'uploading');
-  return json(meetingView((await meetingById(env.DB, id))!), 201);
+  const meeting = await meetingById(env.DB, id);
+  if (!meeting) throw new ApiError(404, 'not_found');
+  return json(meetingView(meeting), 201);
 }
 
 async function providerRequest(request: Request, env: Env, url: URL, match: RegExpExecArray) {
@@ -150,6 +156,7 @@ async function providerRequest(request: Request, env: Env, url: URL, match: RegE
         },
       }));
     await env.MEDIA.put(key, declared ? stream : await new Response(stream).arrayBuffer(), { onlyIf: { etagDoesNotMatch: '*' } });
+    if (!await meetingExists(env.DB, id)) await env.MEDIA.delete(key);
     return new Response(null, { status: 204 });
   }
   throw new ApiError(404, 'not_found');
@@ -201,16 +208,18 @@ async function rename(request: Request, env: Env, meeting: Meeting) {
     // A concurrent explicit rename during title generation takes precedence.
     const result = await env.DB.prepare(`UPDATE meetings SET title_source = 'auto',
       title = COALESCE(?, suggested_title, title), suggested_title = COALESCE(?, suggested_title)
-      WHERE id = ? AND workspace_id = ? AND title = ? AND title_source = ?`)
+      WHERE id = ? AND workspace_id = ? AND title = ? AND title_source = ? AND deleted_at IS NULL`)
       .bind(suggestion, suggestion, meeting.id, meeting.workspace_id, meeting.title, meeting.title_source).run();
     if (!result.meta.changes) throw new ApiError(409, 'title_conflict');
   } else {
     const title = typeof body.title === 'string' ? body.title.trim() : '';
     if (!title || title.length > 120 || /[\r\n]/.test(title)) throw new ApiError(400, 'invalid_title');
-    await env.DB.prepare("UPDATE meetings SET title = ?, title_source = 'manual' WHERE id = ? AND workspace_id = ?")
+    await env.DB.prepare("UPDATE meetings SET title = ?, title_source = 'manual' WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL")
       .bind(title, meeting.id, meeting.workspace_id).run();
   }
-  return json(meetingView((await meetingById(env.DB, meeting.id))!));
+  const updated = await meetingById(env.DB, meeting.id);
+  if (!updated) throw new ApiError(404, 'not_found');
+  return json(meetingView(updated));
 }
 
 async function handle(request: Request, env: Env) {
@@ -233,7 +242,7 @@ async function handle(request: Request, env: Env) {
   if (path === '/api/meetings') {
     if (request.method === 'POST') return upload(request, env, workspace, url);
     if (request.method === 'GET') {
-      const { results } = await env.DB.prepare("SELECT id, title, created_at, state, error, size, duration FROM meetings WHERE workspace_id = ? AND state != 'uploading' ORDER BY created_at DESC")
+      const { results } = await env.DB.prepare("SELECT id, title, created_at, state, error, size, duration FROM meetings WHERE workspace_id = ? AND state != 'uploading' AND deleted_at IS NULL ORDER BY created_at DESC")
         .bind(workspace).all<MeetingSummary>();
       return json(results.map(meetingSummary));
     }
@@ -242,6 +251,7 @@ async function handle(request: Request, env: Env) {
   const match = meetingsPath.exec(path);
   if (!match) throw new ApiError(404, 'not_found');
   const [, id, action] = match;
+  if (!action && request.method === 'DELETE') return deleteMeeting(env, id, workspace);
   const meeting = await meetingById(env.DB, id);
   if (!meeting || meeting.workspace_id !== workspace || meeting.state === 'uploading') throw new ApiError(404, 'not_found');
   if (!action && request.method === 'GET') return json(meetingView(meeting));
@@ -250,7 +260,9 @@ async function handle(request: Request, env: Env) {
   if (action === 'retry' && request.method === 'POST') {
     if (meeting.state !== 'failed') throw new ApiError(409, 'state_conflict');
     await startJob(env, id, 'failed');
-    return json(meetingView((await meetingById(env.DB, id))!), 202);
+    const updated = await meetingById(env.DB, id);
+    if (!updated) throw new ApiError(404, 'not_found');
+    return json(meetingView(updated), 202);
   }
   if (action === 'transcript' && request.method === 'GET') {
     const part = Number(url.searchParams.get('part') ?? 0);
@@ -274,10 +286,12 @@ async function handle(request: Request, env: Env) {
       throw new ApiError(502, 'translation_failed');
     }
     const [zh, en] = language === 'zh' ? [text, other] : [other, text];
-    const result = await env.DB.prepare('UPDATE meetings SET notes_zh = ?, notes_en = ?, version = version + 1 WHERE id = ? AND workspace_id = ? AND version = ?')
+    const result = await env.DB.prepare('UPDATE meetings SET notes_zh = ?, notes_en = ?, version = version + 1 WHERE id = ? AND workspace_id = ? AND version = ? AND deleted_at IS NULL')
       .bind(zh, en, id, workspace, version).run();
+    const updated = await meetingById(env.DB, id);
+    if (!updated) throw new ApiError(404, 'not_found');
     if (!result.meta.changes) throw new ApiError(409, 'version_conflict');
-    return json(meetingView((await meetingById(env.DB, id))!));
+    return json(meetingView(updated));
   }
   throw new ApiError(405, 'invalid_method');
 }

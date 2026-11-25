@@ -9,10 +9,9 @@ export interface Env {
   JOB_SECRET?: string;
 }
 
-export interface ProcessInput {
-  meetingId: string;
-  attempt: string;
-}
+export type ProcessInput =
+  | { meetingId: string; attempt: string }
+  | { meetingId: string; action: 'delete' };
 
 export interface Meeting {
   id: string;
@@ -41,8 +40,13 @@ export interface Segment {
 }
 
 export const mediaKey = (id: string) => `meetings/${id}/audio`;
-export const callbackKey = (attempt: string) => `jobs/${attempt}/callback.json`;
-export const partKey = (attempt: string, part: number) => `jobs/${attempt}/transcript/${part}.json`;
+export const attemptPrefix = (attempt: string) => `jobs/${attempt}/`;
+export const callbackKey = (attempt: string) => attemptPrefix(attempt) + 'callback.json';
+export const partKey = (attempt: string, part: number) => `${attemptPrefix(attempt)}transcript/${part}.json`;
 
 export const meetingById = (db: D1Database, id: string) =>
-  db.prepare('SELECT * FROM meetings WHERE id = ?').bind(id).first<Meeting>();
+  db.prepare('SELECT * FROM meetings WHERE id = ? AND deleted_at IS NULL').bind(id).first<Meeting>();
+
+export const meetingExists = (db: D1Database, id: string) =>
+  db.prepare('SELECT 1 AS active FROM meetings WHERE id = ? AND deleted_at IS NULL')
+    .bind(id).first<number>('active');

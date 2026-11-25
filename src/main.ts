@@ -21,6 +21,11 @@ interface Line { start: number; end: number; speaker: number; text: string }
 interface Draft { language: Lang; text: string; version: number; conflict: boolean; latest?: string }
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
+const deleteDialog = document.createElement('dialog');
+deleteDialog.className = 'delete-dialog';
+deleteDialog.setAttribute('aria-labelledby', 'delete-dialog-title');
+deleteDialog.setAttribute('aria-describedby', 'delete-dialog-description');
+document.body.appendChild(deleteDialog);
 const base = '/api';
 const accepted = 'audio/*,.mp3,.wav,.m4a,.ogg,.webm,.aac,.flac,.mp4';
 const extensions: Record<string, string> = {
@@ -43,6 +48,7 @@ let codeInput = '';
 let titleInput = '';
 let titleDraft: string | null = null;
 let titleBusy = false;
+let deleteBusy = false;
 let error = '';
 let notice = '';
 let uploading = false;
@@ -233,7 +239,9 @@ function details(meeting: Meeting) {
     <div class="detail-head"><div><p class="detail-date">${date(meeting.createdAt)}</p>
       <div class="meeting-heading"><h1>${esc(meeting.title)}</h1>
         ${titleDraft === null ? `<button type="button" class="text-button" data-action="edit-title" ${titleBusy ? 'disabled' : ''}>${s.editTitle}</button>` : ''}</div>
-      </div>${statusBadge(meeting.state)}</div>
+      </div><div class="detail-actions">${statusBadge(meeting.state)}
+        <button type="button" class="text-button delete-action" data-action="delete-meeting" ${saving || titleBusy || retrying ? 'disabled' : ''}>${s.deleteMeeting}</button>
+      </div></div>
     ${titleDraft !== null ? `<form id="title-form" class="title-edit card" aria-label="${s.editTitle}">
       <label for="meeting-title-edit">${s.title}</label>
       <input id="meeting-title-edit" maxlength="120" required value="${esc(titleDraft)}" ${titleBusy ? 'disabled' : ''}>
@@ -484,6 +492,71 @@ async function getTranscript() {
   }
 }
 
+function confirmDeletion() {
+  if (!current || deleteDialog.open || deleteBusy) return;
+  const s = t();
+  deleteDialog.innerHTML = `<form id="delete-form">
+    <h2 id="delete-dialog-title">${s.deletePrompt}</h2>
+    <p class="delete-title">${esc(current.title)}</p>
+    <p id="delete-dialog-description">${s.deleteDescription}</p>
+    <p class="alert" role="alert" hidden></p>
+    <div class="delete-buttons">
+      <button type="button" class="secondary" data-delete-cancel autofocus>${s.cancel}</button>
+      <button type="submit" class="danger">${s.confirmDelete}</button>
+    </div>
+  </form>`;
+  deleteDialog.showModal();
+}
+
+deleteDialog.addEventListener('click', (event) => {
+  if ((event.target as HTMLElement).closest('[data-delete-cancel]') && !deleteBusy) deleteDialog.close();
+});
+deleteDialog.addEventListener('cancel', (event) => {
+  if (deleteBusy) event.preventDefault();
+});
+deleteDialog.addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (!current || deleteBusy) return;
+  void removeCurrentMeeting(current.id);
+});
+
+async function removeCurrentMeeting(id: string) {
+  const confirm = deleteDialog.querySelector<HTMLButtonElement>('[type=submit]')!;
+  const cancel = deleteDialog.querySelector<HTMLButtonElement>('[data-delete-cancel]')!;
+  const feedback = deleteDialog.querySelector<HTMLElement>('[role=alert]')!;
+  deleteBusy = true;
+  confirm.disabled = cancel.disabled = true;
+  confirm.textContent = t().deletingMeeting;
+  feedback.hidden = true;
+  try {
+    await api(detailUrl(id), 'DELETE');
+    finishDeletion(id);
+  } catch (cause) {
+    if (cause instanceof Error && cause.message === 'not_found') {
+      finishDeletion(id);
+    } else if (cause instanceof Error && cause.message === 'no_session') {
+      deleteDialog.close();
+      fail(cause);
+      render();
+    } else {
+      feedback.textContent = t().delete_failed;
+      feedback.hidden = false;
+    }
+  } finally {
+    deleteBusy = false;
+    confirm.disabled = cancel.disabled = false;
+    confirm.textContent = t().confirmDelete;
+  }
+}
+
+function finishDeletion(id: string) {
+  deleteDialog.close();
+  meetings = meetings.filter((meeting) => meeting.id !== id);
+  clearDetail();
+  notice = 'meetingDeleted';
+  render('#meeting-title');
+}
+
 async function saveTitle(automatic = false) {
   if (!current || titleDraft === null || titleBusy || saving) return;
   const version = selection;
@@ -633,6 +706,7 @@ app.addEventListener('click', (event) => {
     case 'file': app.querySelector<HTMLInputElement>('#audio-file')?.click(); break;
     case 'record': void startRecording(); break;
     case 'stop': if (recorder?.state === 'recording') recorder.stop(); break;
+    case 'delete-meeting': confirmDeletion(); break;
     case 'edit-title':
       if (!current || titleBusy) break;
       titleDraft = current.title;
@@ -667,13 +741,18 @@ app.addEventListener('drop', (event) => {
 
 let polling = false;
 async function poll() {
-  if (!active || polling || uploading || recorder || micPending || saving || titleBusy || retrying) return;
+  if (!active || polling || uploading || recorder || micPending || saving || titleBusy || retrying || deleteDialog.open) return;
   const version = selection;
   const sessionVersion = epoch;
   polling = true;
   try {
     const historyChanged = await refreshHistory();
-    if (version !== selection || sessionVersion !== epoch || titleBusy || saving) return;
+    if (version !== selection || sessionVersion !== epoch || titleBusy || saving || deleteDialog.open) return;
+    if (current && !meetings.some((meeting) => meeting.id === current?.id)) {
+      clearDetail();
+      render();
+      return;
+    }
     if (!current || current.state === 'ready' || current.state === 'failed') {
       if (historyChanged && !draft && titleDraft === null) {
         if (current) {
@@ -685,7 +764,7 @@ async function poll() {
       return;
     }
     const meeting = await api<Meeting>(detailUrl(current.id));
-    if (version !== selection || sessionVersion !== epoch || titleBusy || saving) return;
+    if (version !== selection || sessionVersion !== epoch || titleBusy || saving || deleteDialog.open) return;
     if (meeting.state !== current.state || meeting.transcriptParts !== current.transcriptParts) {
       const first = !current.transcriptParts && !!meeting.transcriptParts;
       current = meeting;

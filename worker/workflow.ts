@@ -1,11 +1,12 @@
 import { WorkflowEntrypoint } from 'cloudflare:workers';
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
-import { callbackKey, meetingById, partKey } from './types';
+import { callbackKey, meetingById, meetingExists, partKey } from './types';
 import type { Env, ProcessInput, Segment } from './types';
 import { jobProof } from './security';
 import { findUtterances, readUtterances } from './transcript';
 import type { Cursor } from './transcript';
 import { extractNotes, writeNotes } from './notes';
+import { removeMeeting } from './deletion';
 
 const demoTranscript: Segment[] = [
   { start: 0, end: 3.8, speaker: 0, text: '大家好，今天我们讨论下周的试点。' },
@@ -15,8 +16,9 @@ const demoTranscript: Segment[] = [
 
 export class MeetingProcessing extends WorkflowEntrypoint<Env, ProcessInput> {
   async run(event: WorkflowEvent<ProcessInput>, step: WorkflowStep) {
-    const { meetingId, attempt } = event.payload;
     const env = this.env;
+    if ('action' in event.payload) return removeMeeting(env, step, event.payload.meetingId);
+    const { meetingId, attempt } = event.payload;
     const rawKey = callbackKey(attempt);
     try {
       const shouldProcess = await step.do('check job and submit transcription', {
@@ -24,8 +26,9 @@ export class MeetingProcessing extends WorkflowEntrypoint<Env, ProcessInput> {
       }, async () => {
         const meeting = await meetingById(env.DB, meetingId);
         if (!meeting || meeting.attempt !== attempt || meeting.state !== 'queued') return false;
-        await env.DB.prepare("UPDATE meetings SET state = 'transcribing' WHERE id = ? AND attempt = ?")
+        const started = await env.DB.prepare("UPDATE meetings SET state = 'transcribing' WHERE id = ? AND attempt = ? AND deleted_at IS NULL")
           .bind(meetingId, attempt).run();
+        if (!started.meta.changes) return false;
         if (env.APP_MODE === 'demo') return true;
         if (!env.DEEPGRAM_API_KEY || !env.JOB_SECRET || !env.PUBLIC_ORIGIN) {
           throw new Error('missing_provider_config');
@@ -65,7 +68,7 @@ export class MeetingProcessing extends WorkflowEntrypoint<Env, ProcessInput> {
 
       if (env.APP_MODE === 'demo') {
         await step.do('store example transcript', async () => {
-          await env.MEDIA.put(partKey(attempt, 0), JSON.stringify(demoTranscript));
+          await storeTranscriptPart(env, meetingId, attempt, 0, demoTranscript);
         });
         part = 1;
         duration = demoTranscript.at(-1)!.end;
@@ -92,7 +95,7 @@ export class MeetingProcessing extends WorkflowEntrypoint<Env, ProcessInput> {
           const result = await step.do(`normalize transcript ${position.offset}`, async () => {
             const { next, segments } = await readUtterances(env.MEDIA, rawKey, position, size);
             if (!segments.length) return { next, chars: 0, end: 0 };
-            await env.MEDIA.put(partKey(attempt, index), JSON.stringify(segments));
+            await storeTranscriptPart(env, meetingId, attempt, index, segments);
             return {
               next,
               chars: segments.reduce((total, segment) => total + segment.text.length + 24, 0),
@@ -115,7 +118,7 @@ export class MeetingProcessing extends WorkflowEntrypoint<Env, ProcessInput> {
       }
 
       await step.do('publish transcript', async () => {
-        await env.DB.prepare("UPDATE meetings SET state = 'writing', transcript_parts = ?, duration = ? WHERE id = ? AND attempt = ?")
+        await env.DB.prepare("UPDATE meetings SET state = 'writing', transcript_parts = ?, duration = ? WHERE id = ? AND attempt = ? AND deleted_at IS NULL")
           .bind(part, duration, meetingId, attempt).run();
       });
       const evidence: string[] = [];
@@ -140,7 +143,7 @@ export class MeetingProcessing extends WorkflowEntrypoint<Env, ProcessInput> {
         await env.DB.prepare(`UPDATE meetings SET state = 'ready', notes_zh = ?, notes_en = ?, version = 1,
           suggested_title = COALESCE(?, suggested_title),
           title = CASE WHEN title_source = 'auto' THEN COALESCE(?, title) ELSE title END
-          WHERE id = ? AND attempt = ?`)
+          WHERE id = ? AND attempt = ? AND deleted_at IS NULL`)
           .bind(notes.zh, notes.en, suggestion, suggestion, meetingId, attempt).run();
       });
     } catch (error) {
@@ -149,9 +152,15 @@ export class MeetingProcessing extends WorkflowEntrypoint<Env, ProcessInput> {
         .test(detail) ? detail : 'processing_failed';
       console.error('meeting processing failed', { meetingId, attempt, reason });
       await step.do('record failure', async () => {
-        await env.DB.prepare("UPDATE meetings SET state = 'failed', error = ? WHERE id = ? AND attempt = ?")
+        await env.DB.prepare("UPDATE meetings SET state = 'failed', error = ? WHERE id = ? AND attempt = ? AND deleted_at IS NULL")
           .bind(reason, meetingId, attempt).run();
       });
     }
   }
+}
+
+async function storeTranscriptPart(env: Env, id: string, attempt: string, index: number, segments: Segment[]) {
+  const key = partKey(attempt, index);
+  await env.MEDIA.put(key, JSON.stringify(segments));
+  if (!await meetingExists(env.DB, id)) await env.MEDIA.delete(key);
 }

@@ -18,6 +18,7 @@ A workspace is identified by a portable access code. A user uploads audio or rec
 | A8 | The deployed Free Worker processes the original ~90-minute test MP3 | It reaches ready, with final timestamp and multiple speakers visible. Verify Workers CPU and Workers AI usage, range playback and cross-device access. This requires live Cloudflare and Deepgram credentials. |
 | A9 | A user saves a new meeting without entering a title, or renames any saved meeting | A blank title is replaced by a title based on the generated meeting notes. Explicit titles persist across devices and take precedence over processing. Older titles are preserved during database migration and may be edited or set to a suggested title. |
 | A10 | A user enables live assistance during microphone recording | A Chinese or English wake phrase or the Ask AI button accepts a question. The answer uses this recording's transcript, distinguishes suggestions from meeting facts, matches the question's language and has cloud audio. Disconnecting or reaching a limit leaves ordinary recording active. |
+| A11 | A user selects Delete meeting in a meeting detail | A named confirmation dialog offers Cancel and Confirm deletion. Cancel preserves the record. Confirmation removes the meeting for that workspace and starts cleanup of its stored audio, notes, and transcript. Other meetings and workspaces are unaffected. |
 
 ## Interfaces and invariants
 
@@ -26,6 +27,7 @@ A workspace is identified by a portable access code. A user uploads audio or rec
 - `GET|HEAD /meetings/:id/audio` serves the original MIME type and byte ranges. `GET /meetings/:id/transcript?part=N` returns `{start,end,speaker,text}[]`. `PUT /meetings/:id/notes` takes `{language,text,version}` and returns both updated notes, or 409 for a stale revision.
 - `PUT /meetings/:id/title` accepts `{title}` or `{mode:"auto",language}` and returns the updated meeting. A blank upload title opts into automatic naming, with `fallbackTitle` as temporary display text.
 - `POST /live` starts an authenticated, bounded live session. `GET /live/:id/stream` upgrades to a WebSocket for live PCM frames and transcription. `POST /live/:id/ask` returns separate facts and suggestions with a signed speech token. `POST /live/:id/speech` generates audio for that reply. Live assistance does not change post-recording processing.
+- `DELETE /meetings/:id` is restricted to the owning workspace. It removes the meeting from all workspace views and starts idempotent storage cleanup.
 - A Workflow runs each attempt and polls its authenticated Deepgram callback in R2. Attempt IDs scope callbacks and transcript keys. D1 is the source of truth for status and note revision. Job-specific authorization protects provider reads. Keys and tokens stay out of browser code.
 - Demo mode substitutes a labeled example transcript and deterministic notes/synchronization to test the application plumbing. It uses the same Worker, Workflow and storage interfaces as production.
 
