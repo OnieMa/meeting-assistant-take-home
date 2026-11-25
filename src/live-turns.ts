@@ -54,8 +54,10 @@ export class TranscriptTurns {
 
   get pending() { return this.sections.length > 0; }
 
-  preview() {
-    return [...this.sections.map(({ text }) => text), this.interim].filter(Boolean).join(' ');
+  preview(includeInterim = true) {
+    const text = this.sections.map(({ text }) => text);
+    if (includeInterim && this.interim) text.push(this.interim);
+    return text.join(' ');
   }
 
   finish() {

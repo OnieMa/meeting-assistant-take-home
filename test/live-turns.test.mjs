@@ -46,6 +46,7 @@ test('revises live preview without submitting or repeating unconfirmed speech', 
 
   turns.push(results(0, 1, '你好会议助手，今天'));
   assert.match(turns.preview(), /今天$/);
+  assert.equal(turns.preview(false), '');
   turns.push(results(0, 1.4, '你好会议助手，刚才定了'));
   assert.match(turns.preview(), /刚才定了$/);
   assert.equal(turns.finish(), null);
@@ -56,6 +57,7 @@ test('revises live preview without submitting or repeating unconfirmed speech', 
   assert.equal(turns.preview(), '你好会议助手');
   turns.push(results(3, 1, '什么时候上线'));
   assert.equal(readLiveTurn(turns.preview()).question, '什么时候上线');
+  assert.equal(turns.preview(false), '你好会议助手');
   turns.push(results(3, 1.5, '什么时候启动试点', true));
   assert.equal(readLiveTurn(turns.finish().text).question, '什么时候启动试点');
   assert.equal(turns.preview(), '');

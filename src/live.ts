@@ -64,7 +64,7 @@ export class LiveAssistant {
   private makingAudio = false;
   private question = '';
   private spokenPreview = '';
-  private wakePreview = false;
+  private wakePreview: false | 'tentative' | 'confirmed' = false;
   private submittedQuestion = '';
   private alert = '';
   private reply?: SignedReply;
@@ -227,7 +227,10 @@ export class LiveAssistant {
   private updateSpeechPreview() {
     const parsed = readLiveTurn(this.turns.preview());
     const canWake = this.status === 'ready' && !this.asking && !this.playing;
-    this.wakePreview = !this.listening && canWake && parsed.kind === 'wake';
+    this.wakePreview = false;
+    if (!this.listening && canWake && parsed.kind === 'wake') {
+      this.wakePreview = readLiveTurn(this.turns.preview(false)).kind === 'wake' ? 'confirmed' : 'tentative';
+    }
     this.spokenPreview = this.listening || this.wakePreview
       ? (parsed.kind === 'wake' ? parsed.question : parsed.text).slice(0, liveLimits.question)
       : '';
@@ -242,7 +245,7 @@ export class LiveAssistant {
     if (!region || !caption || !label) return;
     const s = labels[this.locale];
     region.hidden = !(this.listening || this.wakePreview);
-    const status = this.listening ? s.awake : s.checkingWake;
+    const status = this.listening || this.wakePreview === 'confirmed' ? s.awake : s.checkingWake;
     if (label.textContent !== status) label.textContent = status;
     const text = this.spokenPreview || s.awaitingSpeech;
     caption.classList.toggle('live-caption-empty', !this.spokenPreview);
