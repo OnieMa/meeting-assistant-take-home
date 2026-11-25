@@ -182,3 +182,24 @@ textarea { min-height: 184px; resize: vertical; font-size: .93rem; }
 .latest-notes { background: #f0f6f4; border-radius: 8px; padding: 9px 11px; margin-bottom: 9px; }
 .latest-notes summary { cursor: pointer; color: var(--green-deep); font-weight: 650; font-size: .9rem; }
 .latest-notes .notes-content { margin-top: 7px; }
+
+.live-option { display: flex; align-items: center; gap: 7px; margin-top: 14px; }
+.live-option input { accent-color: var(--green); width: 16px; height: 16px; margin: 0; }
+.live-option + .hint { margin-top: 4px; }
+.live-panel { margin-top: 17px; padding: 18px; }
+.live-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
+.live-panel > .hint { margin-top: 7px; }
+.live-status { color: var(--muted); font-size: .88rem; line-height: 1.45; margin-top: 4px; }
+.live-alert { background: #fceced; color: #802432; font-size: .88rem; line-height: 1.45; margin-top: 10px; padding: 8px 10px; border-radius: 7px; }
+.live-question, .live-progress { margin-top: 13px; }
+.live-question > div { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 6px; }
+.live-question input { flex: 1 1 220px; }
+.live-answer { margin-top: 12px; padding: 12px; border-radius: 8px; background: #f0f6f4; }
+.live-answer h3 { font-size: .89rem; color: var(--green-deep); }
+.live-answer p { margin: 4px 0 9px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.title-hint { margin-top: 5px; }
+.meeting-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.title-edit { max-width: 520px; padding: 13px 15px; margin-top: 12px; }
+.title-edit input { margin-top: 5px; }
+.title-edit .edit-actions { flex-wrap: wrap; }

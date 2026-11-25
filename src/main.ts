@@ -1,11 +1,14 @@
 import './style.css';
 import { en, zh } from './strings';
+import { LiveAssistant } from './live';
 
 type Lang = 'en' | 'zh';
 type State = 'queued' | 'transcribing' | 'writing' | 'ready' | 'failed';
 interface Meeting {
   id: string;
   title: string;
+  titleSource?: 'manual' | 'auto';
+  suggestedTitle?: string | null;
   createdAt: number;
   duration: number | null;
   state: State;
@@ -38,6 +41,8 @@ let newCode = '';
 let copied = false;
 let codeInput = '';
 let titleInput = '';
+let titleDraft: string | null = null;
+let titleBusy = false;
 let error = '';
 let notice = '';
 let uploading = false;
@@ -45,6 +50,8 @@ let uploadingPct = 0;
 let micPending = false;
 let recorder: MediaRecorder | null = null;
 let recordingStarted = 0;
+let liveEnabled = false;
+let liveAssistant: LiveAssistant | null = null;
 let saving = false;
 let retrying = false;
 let draft: Draft | null = null;
@@ -105,7 +112,11 @@ function resetWorkspace() {
   nextPart = 0;
   codeInput = '';
   titleInput = '';
+  titleDraft = null;
   notice = '';
+  liveEnabled = false;
+  liveAssistant?.destroy();
+  liveAssistant = null;
 }
 
 function wave() {
@@ -119,10 +130,10 @@ function statusBadge(state: State) {
 function sidebar() {
   const s = t();
   return `<aside class="sidebar">
-    <div class="sidebar-head"><h2>${s.workspace}</h2>${active ? `<button class="new" data-action="new" ${uploading || recorder || micPending || saving ? 'disabled' : ''}><b aria-hidden="true">+</b>${s.newMeeting}</button>` : ''}</div>
+    <div class="sidebar-head"><h2>${s.workspace}</h2>${active ? `<button class="new" data-action="new" ${uploading || recorder || micPending || saving || titleBusy ? 'disabled' : ''}><b aria-hidden="true">+</b>${s.newMeeting}</button>` : ''}</div>
     <h3>${s.history}</h3>
     ${meetings.length ? `<nav class="history" aria-label="${s.history}">${meetings.map((meeting) =>
-      `<button class="history-item" data-meeting="${meeting.id}" ${current?.id === meeting.id ? 'aria-current="true"' : ''} ${uploading || recorder || micPending || saving ? 'disabled' : ''}>
+      `<button class="history-item" data-meeting="${meeting.id}" ${current?.id === meeting.id ? 'aria-current="true"' : ''} ${uploading || recorder || micPending || saving || titleBusy ? 'disabled' : ''}>
         <span class="history-name">${esc(meeting.title)}</span><span class="history-date">${date(meeting.createdAt)}</span>
         <i class="history-state status-${meeting.state}" title="${s[meeting.state]}"></i></button>`,
     ).join('')}</nav>` : `<p class="history-empty">${active ? s.emptyHistory : s.noWorkspace}</p>`}
@@ -161,7 +172,7 @@ function composer() {
   return `<section class="composer">
     <h1>${s.addAudio}</h1><p class="lede">${s.addAudioBody}</p>
     <div class="title-field"><label for="meeting-title">${s.title} <span>${s.optional}</span></label>
-    <input id="meeting-title" maxlength="120" placeholder="${s.titlePlaceholder}" value="${esc(titleInput)}"></div>
+    <input id="meeting-title" maxlength="120" placeholder="${s.titlePlaceholder}" value="${esc(titleInput)}"><p class="hint title-hint">${s.autoTitleHelp}</p></div>
     <div class="sources">
       <section class="source card" id="dropzone">
         <span class="tile" aria-hidden="true">⇧</span>
@@ -176,8 +187,11 @@ function composer() {
         ${recorder
           ? `<button class="danger" data-action="stop">${s.stop}</button><span class="recording-status">● ${s.recording} <time id="record-clock">${time((Date.now() - recordingStarted) / 1000)}</time></span>`
           : `<button class="secondary" data-action="record" ${disabled}>${s.start}</button>`}
+        ${!recorder && !uploading ? `<label class="live-option"><input type="checkbox" id="live-enabled" ${liveEnabled ? 'checked' : ''} ${micPending ? 'disabled' : ''}> ${s.liveOption}</label>
+          <span class="hint">${s.liveOptionHelp}</span>` : ''}
       </section>
     </div>
+    <div id="live-slot"></div>
     ${uploading ? `<div class="upload-progress" role="status"><span>${s.uploading} <span id="upload-percent">${uploadingPct}%</span></span>
       <progress id="upload-progress" max="100" value="${uploadingPct}" aria-label="${s.uploading}"></progress></div>` : ''}
   </section>`;
@@ -216,7 +230,18 @@ function notePanel(meeting: Meeting, key: Lang) {
 function details(meeting: Meeting) {
   const s = t();
   return `<section class="detail">
-    <div class="detail-head"><div><p class="detail-date">${date(meeting.createdAt)}</p><h1>${esc(meeting.title)}</h1></div>${statusBadge(meeting.state)}</div>
+    <div class="detail-head"><div><p class="detail-date">${date(meeting.createdAt)}</p>
+      <div class="meeting-heading"><h1>${esc(meeting.title)}</h1>
+        ${titleDraft === null ? `<button type="button" class="text-button" data-action="edit-title" ${titleBusy ? 'disabled' : ''}>${s.editTitle}</button>` : ''}</div>
+      </div>${statusBadge(meeting.state)}</div>
+    ${titleDraft !== null ? `<form id="title-form" class="title-edit card" aria-label="${s.editTitle}">
+      <label for="meeting-title-edit">${s.title}</label>
+      <input id="meeting-title-edit" maxlength="120" required value="${esc(titleDraft)}" ${titleBusy ? 'disabled' : ''}>
+      <div class="edit-actions">
+        <button type="submit" class="primary" ${titleBusy ? 'disabled' : ''}>${titleBusy ? s.savingTitle : s.saveTitle}</button>
+        <button type="button" class="text-button" data-action="cancel-title" ${titleBusy ? 'disabled' : ''}>${s.cancel}</button>
+        ${meeting.titleSource === 'manual' && meeting.state !== 'failed' ? `<button type="button" class="text-button" data-action="auto-title" ${titleBusy ? 'disabled' : ''}>${s.useAiTitle}</button>` : ''}
+      </div></form>` : ''}
     ${meeting.state === 'failed' ? `<div class="processing"><p>${message(meeting.error ?? 'processing_failed')}</p><button data-action="retry" class="secondary" ${retrying ? 'disabled' : ''}>${s.retry}</button></div>` : meeting.state !== 'ready' ? `<p class="processing">${s.wait}</p>` : ''}
     <section class="playback card"><div><h2>${s.playback}</h2></div>
       <audio id="player" controls preload="metadata" src="${base + detailUrl(meeting.id)}/audio" aria-label="${s.playback}"></audio></section>
@@ -243,7 +268,7 @@ function render(focusId?: string) {
   document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en';
   document.title = s.brand;
   app.innerHTML = `<header class="topbar"><div class="brand"><span class="brand-mark">${wave()}</span><span>${s.brand}</span></div>
-    <div class="top-actions">${active ? `<button class="text-button switch" data-action="signout" ${uploading || recorder || micPending || saving ? 'disabled' : ''}>${s.switchWorkspace}</button>` : ''}
+    <div class="top-actions">${active ? `<button class="text-button switch" data-action="signout" ${uploading || recorder || micPending || saving || titleBusy ? 'disabled' : ''}>${s.switchWorkspace}</button>` : ''}
       <div class="language" aria-label="Language / 语言"><button data-lang="en" lang="en" aria-pressed="${language === 'en'}">EN</button><button data-lang="zh" lang="zh" aria-pressed="${language === 'zh'}">中文</button></div>
     </div></header>
     <div class="layout">${sidebar()}<main id="workspace" class="main ${active ? '' : 'guest'}">
@@ -252,6 +277,8 @@ function render(focusId?: string) {
       ${error ? `<div class="alert" role="alert">${message(error)}</div>` : notice ? `<div class="success" role="status">${message(notice)}</div>` : ''}
       ${active ? current ? details(current) : composer() : gate()}
     </main></div>`;
+  const liveSlot = app.querySelector<HTMLElement>('#live-slot');
+  if (liveSlot && liveAssistant) liveAssistant.mount(liveSlot, language);
   const player = app.querySelector<HTMLAudioElement>('#player');
   if (player && player.getAttribute('src') === oldSrc && (oldTime || wasPlaying)) {
     player.currentTime = oldTime;
@@ -295,6 +322,7 @@ function clearDetail() {
   nextPart = 0;
   reading = false;
   draft = null;
+  titleDraft = null;
   error = '';
   notice = '';
 }
@@ -315,10 +343,10 @@ async function openMeeting(id: string) {
   }
 }
 
-function sendAudio(blob: Blob, mime: string, title: string) {
+function sendAudio(blob: Blob, mime: string, title: string, fallbackTitle: string) {
   return new Promise<Meeting>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', base + '/meetings?' + new URLSearchParams({ title }));
+    xhr.open('POST', base + '/meetings?' + new URLSearchParams({ title, fallbackTitle }));
     xhr.responseType = 'json';
     xhr.setRequestHeader('Content-Type', mime);
     xhr.upload.addEventListener('progress', ({ loaded, total }) => {
@@ -350,7 +378,7 @@ async function addAudio(blob: Blob, name: string, mime: string) {
   uploadingPct = 0;
   render();
   try {
-    const meeting = await sendAudio(blob, mime, titleInput.trim() || name);
+    const meeting = await sendAudio(blob, mime, titleInput.trim(), name);
     await refreshHistory();
     titleInput = '';
     await openMeeting(meeting.id);
@@ -382,7 +410,7 @@ async function startRecording() {
   render();
   let stream: MediaStream | undefined;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream = await navigator.mediaDevices.getUserMedia({ audio: liveEnabled ? { echoCancellation: true } : true });
     const mime = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus']
       .find((format) => MediaRecorder.isTypeSupported(format));
     const instance = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 64000 } : undefined);
@@ -407,6 +435,9 @@ async function startRecording() {
       if (instance.state !== 'inactive') instance.stop();
     });
     instance.addEventListener('stop', () => {
+      liveAssistant?.destroy();
+      liveAssistant = null;
+      liveEnabled = false;
       stopTracks();
       recorder = null;
       if (broken) {
@@ -420,6 +451,10 @@ async function startRecording() {
     instance.start(1000);
     recorder = instance;
     recordingStarted = Date.now();
+    if (liveEnabled) {
+      liveAssistant = new LiveAssistant();
+      void liveAssistant.start(stream, recordingStarted);
+    }
   } catch {
     stream?.getTracks().forEach((track) => track.stop());
     error = 'mic_denied';
@@ -449,8 +484,31 @@ async function getTranscript() {
   }
 }
 
+async function saveTitle(automatic = false) {
+  if (!current || titleDraft === null || titleBusy || saving) return;
+  const version = selection;
+  titleBusy = true;
+  error = '';
+  notice = '';
+  render();
+  try {
+    const meeting = await api<Meeting>(detailUrl(current.id) + '/title', 'PUT',
+      automatic ? { mode: 'auto', language } : { title: titleDraft });
+    if (version !== selection) return;
+    current = meeting;
+    titleDraft = null;
+    notice = 'titleSaved';
+    await refreshHistory();
+  } catch (cause) {
+    if (version === selection) fail(cause);
+  } finally {
+    titleBusy = false;
+    render(titleDraft !== null ? '#meeting-title-edit' : undefined);
+  }
+}
+
 async function saveNotes() {
-  if (!current || !draft || saving || draft.conflict) return;
+  if (!current || !draft || saving || titleBusy || draft.conflict) return;
   saving = true;
   error = '';
   notice = '';
@@ -522,17 +580,20 @@ app.addEventListener('input', (event) => {
   const input = event.target as HTMLInputElement;
   if (input.id === 'code-input') codeInput = input.value;
   if (input.id === 'meeting-title') titleInput = input.value;
+  if (input.id === 'meeting-title-edit' && titleDraft !== null) titleDraft = input.value;
   if (input.id === 'note-text' && draft) draft.text = input.value;
 });
 app.addEventListener('change', (event) => {
   const input = event.target as HTMLInputElement;
   if (input.id === 'audio-file' && input.files?.[0]) uploadFile(input.files[0]);
+  if (input.id === 'live-enabled') liveEnabled = input.checked;
 });
 app.addEventListener('submit', (event) => {
   const form = event.target as HTMLFormElement;
   event.preventDefault();
   if (form.id === 'join-form') void authenticate('open');
   if (form.id === 'notes-form') void saveNotes();
+  if (form.id === 'title-form') void saveTitle();
 });
 app.addEventListener('click', (event) => {
   const button = (event.target as Element).closest<HTMLButtonElement>('button');
@@ -572,6 +633,15 @@ app.addEventListener('click', (event) => {
     case 'file': app.querySelector<HTMLInputElement>('#audio-file')?.click(); break;
     case 'record': void startRecording(); break;
     case 'stop': if (recorder?.state === 'recording') recorder.stop(); break;
+    case 'edit-title':
+      if (!current || titleBusy) break;
+      titleDraft = current.title;
+      error = '';
+      notice = '';
+      render('#meeting-title-edit');
+      break;
+    case 'cancel-title': titleDraft = null; error = ''; render(); break;
+    case 'auto-title': void saveTitle(true); break;
     case 'cancel-edit': draft = null; error = ''; render(); break;
     case 'reload-notes': void reloadNotes(); break;
     case 'transcript': void getTranscript(); break;
@@ -597,19 +667,25 @@ app.addEventListener('drop', (event) => {
 
 let polling = false;
 async function poll() {
-  if (!active || polling || uploading || recorder || micPending || saving || retrying) return;
+  if (!active || polling || uploading || recorder || micPending || saving || titleBusy || retrying) return;
   const version = selection;
   const sessionVersion = epoch;
   polling = true;
   try {
     const historyChanged = await refreshHistory();
-    if (version !== selection || sessionVersion !== epoch) return;
+    if (version !== selection || sessionVersion !== epoch || titleBusy || saving) return;
     if (!current || current.state === 'ready' || current.state === 'failed') {
-      if (historyChanged && !draft) render();
+      if (historyChanged && !draft && titleDraft === null) {
+        if (current) {
+          const summary = meetings.find((entry) => entry.id === current?.id);
+          if (summary) current.title = summary.title;
+        }
+        render();
+      }
       return;
     }
     const meeting = await api<Meeting>(detailUrl(current.id));
-    if (version !== selection || sessionVersion !== epoch) return;
+    if (version !== selection || sessionVersion !== epoch || titleBusy || saving) return;
     if (meeting.state !== current.state || meeting.transcriptParts !== current.transcriptParts) {
       const first = !current.transcriptParts && !!meeting.transcriptParts;
       current = meeting;

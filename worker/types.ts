@@ -18,6 +18,8 @@ export interface Meeting {
   id: string;
   workspace_id: string;
   title: string;
+  title_source: 'manual' | 'auto';
+  suggested_title: string | null;
   mime: string;
   size: number;
   created_at: number;

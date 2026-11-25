@@ -1,39 +1,16 @@
+import { ApiError, json, smallJson } from './http';
+import { handleLive } from './live';
 import { accessCode, currentWorkspace, hash, jobProof, matches, newSession, normalizedCode, sessionCookie, sessionToken } from './security';
 import { callbackKey, mediaKey, meetingById, partKey } from './types';
 import type { Env, Meeting } from './types';
-import { translateNotes } from './notes';
+import { suggestExistingTitle, translateNotes } from './notes';
 export { MeetingProcessing } from './workflow';
 
 const maxAudioBytes = 95_000_000;
 const idPattern = '[0-9a-f-]{36}';
 const jobsPath = new RegExp(`^/api/jobs/(${idPattern})/(${idPattern})/(source|callback)$`);
-const meetingsPath = new RegExp(`^/api/meetings/(${idPattern})(?:/(audio|transcript|notes|retry))?$`);
+const meetingsPath = new RegExp(`^/api/meetings/(${idPattern})(?:/(audio|transcript|notes|retry|title))?$`);
 const allowedMime = /^(audio\/[a-z0-9.+-]+|video\/(webm|mp4|ogg)|application\/ogg)$/i;
-
-class ApiError extends Error {
-  constructor(readonly status: number, code: string) {
-    super(code);
-  }
-}
-
-const json = (body: unknown, status = 200, headers?: HeadersInit) => {
-  const result = new Headers(headers);
-  result.set('Cache-Control', 'private, no-store');
-  result.set('X-Content-Type-Options', 'nosniff');
-  return Response.json(body, { status, headers: result });
-};
-
-async function smallJson<T>(request: Request): Promise<T> {
-  const length = Number(request.headers.get('Content-Length'));
-  if (!request.body || length <= 0 || length > 40_000) throw new ApiError(400, 'invalid_request');
-  try {
-    const result: T = await request.json();
-    if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error();
-    return result;
-  } catch {
-    throw new ApiError(400, 'invalid_request');
-  }
-}
 
 type MeetingSummary = Pick<Meeting, 'id' | 'title' | 'created_at' | 'state' | 'error' | 'size' | 'duration'>;
 
@@ -42,10 +19,11 @@ function meetingSummary({ id, title, created_at, state, error, size, duration }:
 }
 
 function meetingView(meeting: Meeting) {
-  const { transcript_parts, notes_zh, notes_en, version } = meeting;
+  const { transcript_parts, notes_zh, notes_en, title_source, suggested_title, version } = meeting;
   return {
     ...meetingSummary(meeting),
     transcriptParts: transcript_parts, notes: { zh: notes_zh, en: notes_en }, version,
+    titleSource: title_source, suggestedTitle: suggested_title,
   };
 }
 
@@ -113,10 +91,13 @@ async function upload(request: Request, env: Env, workspace: string, url: URL) {
   if (size > maxAudioBytes) throw new ApiError(413, 'audio_too_large');
   const mime = request.headers.get('Content-Type')?.split(';')[0].trim() ?? '';
   if (!allowedMime.test(mime)) throw new ApiError(415, 'audio_type');
-  const title = (url.searchParams.get('title') ?? '').trim().slice(0, 120) || 'Meeting';
+  const explicitTitle = (url.searchParams.get('title') ?? '').trim().slice(0, 120);
+  const fallbackTitle = (url.searchParams.get('fallbackTitle') ?? '').trim().slice(0, 120);
+  const title = explicitTitle || fallbackTitle || 'Meeting';
   const id = crypto.randomUUID();
-  await env.DB.prepare('INSERT INTO meetings (id, workspace_id, title, mime, size, created_at, state) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .bind(id, workspace, title, mime, size, Date.now(), 'uploading').run();
+  await env.DB.prepare(`INSERT INTO meetings (id, workspace_id, title, title_source, mime, size, created_at, state)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(id, workspace, title, explicitTitle ? 'manual' : 'auto', mime, size, Date.now(), 'uploading').run();
   try {
     const object = await env.MEDIA.put(mediaKey(id), request.body, { httpMetadata: { contentType: mime } });
     if (!object || object.size !== size) throw new Error('incomplete_upload');
@@ -203,6 +184,35 @@ async function session(request: Request, env: Env) {
   return json({ active: true }, 200, { 'Set-Cookie': await newSession(request, env, workspace) });
 }
 
+async function rename(request: Request, env: Env, meeting: Meeting) {
+  const body = await smallJson<{ title?: unknown; mode?: unknown; language?: unknown }>(request, 2_000);
+  if (body.mode === 'auto') {
+    let suggestion = meeting.suggested_title;
+    if (!suggestion && meeting.state === 'ready') {
+      const language = body.language === 'zh' ? 'zh' : 'en';
+      const notes = language === 'zh' ? meeting.notes_zh : meeting.notes_en;
+      if (!notes) throw new ApiError(409, 'state_conflict');
+      try {
+        suggestion = await suggestExistingTitle(env, notes, language);
+      } catch {
+        throw new ApiError(502, 'title_generation_failed');
+      }
+    }
+    // A concurrent explicit rename during title generation takes precedence.
+    const result = await env.DB.prepare(`UPDATE meetings SET title_source = 'auto',
+      title = COALESCE(?, suggested_title, title), suggested_title = COALESCE(?, suggested_title)
+      WHERE id = ? AND workspace_id = ? AND title = ? AND title_source = ?`)
+      .bind(suggestion, suggestion, meeting.id, meeting.workspace_id, meeting.title, meeting.title_source).run();
+    if (!result.meta.changes) throw new ApiError(409, 'title_conflict');
+  } else {
+    const title = typeof body.title === 'string' ? body.title.trim() : '';
+    if (!title || title.length > 120 || /[\r\n]/.test(title)) throw new ApiError(400, 'invalid_title');
+    await env.DB.prepare("UPDATE meetings SET title = ?, title_source = 'manual' WHERE id = ? AND workspace_id = ?")
+      .bind(title, meeting.id, meeting.workspace_id).run();
+  }
+  return json(meetingView((await meetingById(env.DB, meeting.id))!));
+}
+
 async function handle(request: Request, env: Env) {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -219,6 +229,7 @@ async function handle(request: Request, env: Env) {
 
   const workspace = await currentWorkspace(request, env);
   if (!workspace) throw new ApiError(401, 'no_session');
+  if (path === '/api/live' || path.startsWith('/api/live/')) return handleLive(request, env, workspace, url);
   if (path === '/api/meetings') {
     if (request.method === 'POST') return upload(request, env, workspace, url);
     if (request.method === 'GET') {
@@ -234,6 +245,7 @@ async function handle(request: Request, env: Env) {
   const meeting = await meetingById(env.DB, id);
   if (!meeting || meeting.workspace_id !== workspace || meeting.state === 'uploading') throw new ApiError(404, 'not_found');
   if (!action && request.method === 'GET') return json(meetingView(meeting));
+  if (action === 'title' && request.method === 'PUT') return rename(request, env, meeting);
   if (action === 'audio' && (request.method === 'GET' || request.method === 'HEAD')) return audio(env, request, meeting);
   if (action === 'retry' && request.method === 'POST') {
     if (meeting.state !== 'failed') throw new ApiError(409, 'state_conflict');

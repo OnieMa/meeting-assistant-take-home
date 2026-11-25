@@ -136,8 +136,12 @@ export class MeetingProcessing extends WorkflowEntrypoint<Env, ProcessInput> {
         retries: { limit: 1, delay: '5 seconds' },
       }, () => writeNotes(env, evidence));
       await step.do('publish notes', async () => {
-        await env.DB.prepare("UPDATE meetings SET state = 'ready', notes_zh = ?, notes_en = ?, version = 1 WHERE id = ? AND attempt = ?")
-          .bind(notes.zh, notes.en, meetingId, attempt).run();
+        const suggestion = notes.title ?? null;
+        await env.DB.prepare(`UPDATE meetings SET state = 'ready', notes_zh = ?, notes_en = ?, version = 1,
+          suggested_title = COALESCE(?, suggested_title),
+          title = CASE WHEN title_source = 'auto' THEN COALESCE(?, title) ELSE title END
+          WHERE id = ? AND attempt = ?`)
+          .bind(notes.zh, notes.en, suggestion, suggestion, meetingId, attempt).run();
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : '';
