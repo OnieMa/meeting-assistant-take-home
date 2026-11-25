@@ -1,6 +1,7 @@
 import { liveLimits } from '../shared/live';
 import type { ReplyLanguage, SignedReply } from '../shared/live';
 import { addLiveContext, readLiveTurn, TranscriptTurns } from './live-turns';
+import type { TranscriptResult } from './live-turns';
 
 const labels = {
   en: {
@@ -13,8 +14,9 @@ const labels = {
     live_unavailable: 'Live assistance is temporarily unavailable.',
     live_answer_failed: 'The assistant could not answer. Try asking again.',
     live_speech_failed: 'Cloud speech is unavailable. The text answer is ready.',
-    ask: 'Ask AI', reconnect: 'Reconnect', listening: 'Speak your question now, or type it below.',
-    thinking: 'Preparing your answer…', send: 'Send', cancel: 'Cancel question', field: 'Your question',
+    ask: 'Ask AI', reconnect: 'Reconnect', listening: 'Or type a question',
+    awake: 'Awake · Listening to your question', checkingWake: 'Detecting wake phrase…', awaitingSpeech: 'Your words will appear here as you speak.',
+    heard: 'Your question', thinking: 'Preparing your answer…', send: 'Send', cancel: 'Cancel question', field: 'Your question',
     placeholder: 'What did we agree on?', meeting: 'From the meeting', suggestion: 'AI suggestion',
     audioWait: 'Preparing cloud audio…', play: 'Play reply', stop: 'Stop audio',
     wake: 'Say “Hey meeting assistant” or “你好，会议助手”.',
@@ -29,8 +31,9 @@ const labels = {
     live_unavailable: '实时助手暂不可用。',
     live_answer_failed: '助手未能回答，请重试提问。',
     live_speech_failed: '云端朗读暂不可用，文字回复已生成。',
-    ask: '问 AI', reconnect: '重新连接', listening: '现在可以口述问题，也可以在下方输入。',
-    thinking: '正在准备回复…', send: '发送', cancel: '取消提问', field: '你的问题',
+    ask: '问 AI', reconnect: '重新连接', listening: '也可以输入问题',
+    awake: '已唤醒 · 正在听你的问题', checkingWake: '正在识别唤醒词…', awaitingSpeech: '你说的话会实时显示在这里。',
+    heard: '你问了', thinking: '正在准备回复…', send: '发送', cancel: '取消提问', field: '你的问题',
     placeholder: '刚才确定了什么？', meeting: '会议中已提到', suggestion: 'AI 建议',
     audioWait: '正在生成云端语音…', play: '播放回复', stop: '停止朗读',
     wake: '说「你好，会议助手」或 “Hey meeting assistant”。',
@@ -60,6 +63,9 @@ export class LiveAssistant {
   private asking = false;
   private makingAudio = false;
   private question = '';
+  private spokenPreview = '';
+  private wakePreview = false;
+  private submittedQuestion = '';
   private alert = '';
   private reply?: SignedReply;
   private player = new Audio();
@@ -175,11 +181,9 @@ export class LiveAssistant {
         if (this.socket !== socket) return;
         this.socket = undefined;
         window.clearInterval(this.keepAliveTimer);
-        this.flushTurn();
-        this.listening = false;
-        window.clearTimeout(this.questionTimer);
         this.status = event.code === 4001 ? 'expired' : 'offline';
-        this.draw();
+        this.flushTurn();
+        this.cancelQuestion();
       };
     } catch (reason) {
       if (this.destroyed) return;
@@ -205,19 +209,52 @@ export class LiveAssistant {
 
   private receive(message: string) {
     try {
-      const result = JSON.parse(message);
+      const result: TranscriptResult = JSON.parse(message);
       const ended = this.turns.push(result);
-      if (ended) this.flushTurn();
-      else if (this.turns.pending && result.type === 'Results' && result.is_final) {
+      if (ended) {
+        this.flushTurn();
+        return;
+      }
+      if (result.type !== 'Results') return;
+      this.updateSpeechPreview();
+      if (this.turns.pending && (result.is_final || result.channel?.alternatives?.[0]?.transcript?.trim())) {
         window.clearTimeout(this.finalizeTimer);
         this.finalizeTimer = window.setTimeout(() => this.flushTurn(), 1600);
       }
     } catch { /* Ignore non-transcript provider messages. */ }
   }
 
+  private updateSpeechPreview() {
+    const parsed = readLiveTurn(this.turns.preview());
+    const canWake = this.status === 'ready' && !this.asking && !this.playing;
+    this.wakePreview = !this.listening && canWake && parsed.kind === 'wake';
+    this.spokenPreview = this.listening || this.wakePreview
+      ? (parsed.kind === 'wake' ? parsed.question : parsed.text).slice(0, liveLimits.question)
+      : '';
+    if (this.listening && this.spokenPreview) this.resetQuestionTimer();
+    this.paintSpeechPreview();
+  }
+
+  private paintSpeechPreview() {
+    const region = this.panel.querySelector<HTMLElement>('.live-capture');
+    const caption = region?.querySelector<HTMLElement>('.live-caption');
+    const label = region?.querySelector<HTMLElement>('.live-awake-label');
+    if (!region || !caption || !label) return;
+    const s = labels[this.locale];
+    region.hidden = !(this.listening || this.wakePreview);
+    const status = this.listening ? s.awake : s.checkingWake;
+    if (label.textContent !== status) label.textContent = status;
+    const text = this.spokenPreview || s.awaitingSpeech;
+    caption.classList.toggle('live-caption-empty', !this.spokenPreview);
+    if (caption.textContent !== text) caption.textContent = text;
+  }
+
   private flushTurn() {
     window.clearTimeout(this.finalizeTimer);
     const turn = this.turns.finish();
+    this.wakePreview = false;
+    this.spokenPreview = '';
+    this.paintSpeechPreview();
     if (!turn) return;
     const parsed = readLiveTurn(turn.text);
     if (this.listening && !this.asking && !this.question.trim()) {
@@ -239,12 +276,18 @@ export class LiveAssistant {
     this.flushPendingMeeting();
     this.listening = true;
     this.question = '';
+    this.wakePreview = false;
+    this.spokenPreview = '';
     this.alert = '';
+    this.resetQuestionTimer();
+    this.draw();
+  }
+
+  private resetQuestionTimer() {
     window.clearTimeout(this.questionTimer);
     this.questionTimer = window.setTimeout(() => {
       if (!this.question) this.cancelQuestion();
     }, 12_000);
-    this.draw();
   }
 
   private flushPendingMeeting() {
@@ -257,6 +300,8 @@ export class LiveAssistant {
     window.clearTimeout(this.questionTimer);
     this.question = '';
     this.listening = false;
+    this.wakePreview = false;
+    this.spokenPreview = '';
     this.draw();
   }
 
@@ -267,6 +312,9 @@ export class LiveAssistant {
     window.clearTimeout(this.questionTimer);
     this.listening = false;
     this.question = '';
+    this.wakePreview = false;
+    this.spokenPreview = '';
+    this.submittedQuestion = question;
     this.asking = true;
     this.alert = '';
     this.clearAudio();
@@ -348,11 +396,17 @@ export class LiveAssistant {
       ${this.status === 'ready' ? `<button type="button" class="secondary" data-live="ask" ${this.asking || this.listening ? 'disabled' : ''}>${s.ask}</button>` : ''}
       ${this.status === 'offline' ? `<button type="button" class="secondary" data-live="reconnect">${s.reconnect}</button>` : ''}
       </div>
-      ${this.status === 'ready' ? `<p class="hint">${s.wake}</p>` : ''}
+      ${this.status === 'ready' && !this.listening ? `<p class="hint">${s.wake}</p>` : ''}
       ${this.alert ? `<p class="live-alert" role="alert">${alert}</p>` : ''}
+      <div class="live-capture" hidden>
+        <div class="live-awake" role="status"><span class="live-pulse" aria-hidden="true"></span><span class="live-awake-label"></span></div>
+        <p class="live-caption" dir="auto"></p>
+      </div>
       ${this.listening ? `<form class="live-question"><label for="live-question-input">${s.listening}</label>
         <div><input id="live-question-input" maxlength="${liveLimits.question}" value="${escape(this.question)}" placeholder="${s.placeholder}" aria-label="${s.field}">
         <button class="primary">${s.send}</button><button type="button" class="text-button" data-live="cancel">${s.cancel}</button></div></form>` : ''}
+      ${this.submittedQuestion && !this.listening ? `<div class="live-submitted"><strong>${s.heard}</strong>
+        <p dir="auto">${escape(this.submittedQuestion)}</p></div>` : ''}
       ${this.asking && !this.reply ? `<p class="live-progress" role="status">${s.thinking}</p>` : ''}
       ${this.reply ? `<div class="live-answer" lang="${this.reply.language}">
         ${this.reply.meeting ? `<h3>${s.meeting}</h3><p>${escape(this.reply.meeting)}</p>` : ''}
@@ -360,6 +414,7 @@ export class LiveAssistant {
         ${this.makingAudio ? `<p class="hint" role="status">${s.audioWait}</p>` : ''}
         ${this.audioUrl ? `<button type="button" class="secondary" data-live="${this.playing ? 'stop' : 'play'}">${this.playing ? s.stop : s.play}</button>` : ''}
       </div>` : ''}`;
+    this.paintSpeechPreview();
     if (focused) {
       const input = this.panel.querySelector<HTMLInputElement>('input');
       input?.focus();

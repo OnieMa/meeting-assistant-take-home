@@ -15,7 +15,7 @@ export function readLiveTurn(text: string): Turn {
   };
 }
 
-interface FinalResult {
+export interface TranscriptResult {
   type?: string;
   start?: number;
   duration?: number;
@@ -27,17 +27,26 @@ interface FinalResult {
 export class TranscriptTurns {
   private seen = new Set<string>();
   private sections: { start: number; text: string }[] = [];
+  private interim = '';
+  private finalizedThrough = 0;
 
-  push(result: FinalResult): boolean {
+  push(result: TranscriptResult): boolean {
     if (result.type === 'UtteranceEnd') return this.sections.length > 0;
     if (result.type !== 'Results') return false;
-    const text = result.channel?.alternatives?.[0]?.transcript?.trim();
-    if (result.is_final && text && Number.isFinite(result.start) && Number.isFinite(result.duration)) {
-      const start = result.start!;
-      const key = start + ':' + result.duration;
-      if (!this.seen.has(key)) {
-        this.seen.add(key);
-        this.sections.push({ start, text });
+    const text = result.channel?.alternatives?.[0]?.transcript?.trim() ?? '';
+    const start = result.start;
+    const duration = result.duration;
+    if (typeof start === 'number' && typeof duration === 'number' && Number.isFinite(start) && Number.isFinite(duration)) {
+      if (result.is_final) {
+        const key = start + ':' + duration;
+        if (!this.seen.has(key)) {
+          this.seen.add(key);
+          this.finalizedThrough = Math.max(this.finalizedThrough, start + duration);
+          this.interim = '';
+          if (text) this.sections.push({ start, text });
+        }
+      } else if (start >= this.finalizedThrough - 0.06) {
+        this.interim = text;
       }
     }
     return this.sections.length > 0 && result.speech_final === true;
@@ -45,7 +54,12 @@ export class TranscriptTurns {
 
   get pending() { return this.sections.length > 0; }
 
+  preview() {
+    return [...this.sections.map(({ text }) => text), this.interim].filter(Boolean).join(' ');
+  }
+
   finish() {
+    this.interim = '';
     const first = this.sections[0];
     if (!first) return null;
     const text = this.sections.map((section) => section.text).join(' ');
@@ -56,6 +70,8 @@ export class TranscriptTurns {
   reset() {
     this.sections = [];
     this.seen.clear();
+    this.interim = '';
+    this.finalizedThrough = 0;
   }
 }
 

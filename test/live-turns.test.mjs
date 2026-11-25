@@ -37,3 +37,26 @@ test('retains recent timestamped transcript and flags when older discussion was 
   assert.match(context, /\[1:22] Finalize the schedule\.$/);
   assert.ok(context.length <= 90);
 });
+
+test('revises live preview without submitting or repeating unconfirmed speech', () => {
+  const turns = new TranscriptTurns();
+  const results = (start, duration, transcript, is_final = false) => ({
+    type: 'Results', start, duration, is_final, channel: { alternatives: [{ transcript }] },
+  });
+
+  turns.push(results(0, 1, '你好会议助手，今天'));
+  assert.match(turns.preview(), /今天$/);
+  turns.push(results(0, 1.4, '你好会议助手，刚才定了'));
+  assert.match(turns.preview(), /刚才定了$/);
+  assert.equal(turns.finish(), null);
+  assert.equal(turns.preview(), '');
+
+  turns.push(results(2, 1, '你好会议助手', true));
+  turns.push(results(2, 0.8, '你好会议'));
+  assert.equal(turns.preview(), '你好会议助手');
+  turns.push(results(3, 1, '什么时候上线'));
+  assert.equal(readLiveTurn(turns.preview()).question, '什么时候上线');
+  turns.push(results(3, 1.5, '什么时候启动试点', true));
+  assert.equal(readLiveTurn(turns.finish().text).question, '什么时候启动试点');
+  assert.equal(turns.preview(), '');
+});

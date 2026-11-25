@@ -215,3 +215,19 @@ textarea { min-height: 184px; resize: vertical; font-size: .93rem; }
 .delete-dialog .delete-title { font-weight: 680; color: var(--ink); }
 .delete-dialog .alert { color: #802432; margin-bottom: 0; }
 .delete-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 19px; }
+
+.live-capture {
+  margin-top: 12px; padding: 10px 12px; border: 1px solid #c5e4da;
+  border-radius: 9px; background: #ecf8f3;
+}
+.live-awake { display: flex; align-items: center; gap: 8px; color: var(--green-deep); font-size: .9rem; font-weight: 700; }
+.live-pulse { width: 9px; height: 9px; border-radius: 50%; flex: none; background: #278369; animation: live-pulse 1.35s ease-out infinite; }
+@keyframes live-pulse {
+  0% { box-shadow: 0 0 0 0 #2783696b; }
+  75%, 100% { box-shadow: 0 0 0 6px #27836900; }
+}
+@media (prefers-reduced-motion: reduce) { .live-pulse { animation: none; } }
+.live-caption, .live-submitted p { margin-top: 5px; line-height: 1.5; overflow-wrap: anywhere; }
+.live-caption-empty { color: var(--muted); }
+.live-submitted { margin-top: 12px; padding-inline-start: 10px; border-inline-start: 2px solid #b5d6cb; }
+.live-submitted strong { font-size: .88rem; color: var(--green-deep); }

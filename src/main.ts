@@ -177,6 +177,7 @@ function composer() {
   const disabled = uploading || recorder || micPending ? 'disabled' : '';
   return `<section class="composer">
     <h1>${s.addAudio}</h1><p class="lede">${s.addAudioBody}</p>
+    <div id="live-slot"></div>
     <div class="title-field"><label for="meeting-title">${s.title} <span>${s.optional}</span></label>
     <input id="meeting-title" maxlength="120" placeholder="${s.titlePlaceholder}" value="${esc(titleInput)}"><p class="hint title-hint">${s.autoTitleHelp}</p></div>
     <div class="sources">
@@ -197,7 +198,6 @@ function composer() {
           <span class="hint">${s.liveOptionHelp}</span>` : ''}
       </section>
     </div>
-    <div id="live-slot"></div>
     ${uploading ? `<div class="upload-progress" role="status"><span>${s.uploading} <span id="upload-percent">${uploadingPct}%</span></span>
       <progress id="upload-progress" max="100" value="${uploadingPct}" aria-label="${s.uploading}"></progress></div>` : ''}
   </section>`;
