@@ -1,6 +1,6 @@
 # Evaluation Focus
 
-[Assignment](README.md) · [Test Audio](TEST_RECORDING.md)
+[Assignment](ASSIGNMENT.md) · [Test Audio](TEST_RECORDING.md)
 
 We give equal importance to the following three areas, considering the recommended **1–2 hours** of effort, the scope you deliver, and your tradeoffs. Incomplete submissions are welcome; explain the missing parts and tradeoffs in your submission.
 

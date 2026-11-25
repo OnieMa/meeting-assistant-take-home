@@ -1,6 +1,6 @@
 # Submission Guide
 
-[Assignment brief](README.md)
+[Assignment brief](ASSIGNMENT.md)
 
 Plan for **1–2 hours** of work and submit **within 2 days** of receiving the assignment. AI-assisted development and partial submissions are welcome. Clearly state unfinished features and tradeoffs.
 

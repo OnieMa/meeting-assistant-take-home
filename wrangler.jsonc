@@ -1,0 +1,43 @@
+{
+	"name": "meeting-assistant",
+	"main": "worker/index.ts",
+	"compatibility_date": "2026-11-25",
+	"assets": {
+		"directory": "./dist",
+		"run_worker_first": [
+			"/api/*"
+		]
+	},
+	"observability": {
+		"enabled": true,
+		"logs": {
+			"invocation_logs": false
+		}
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "meeting-assistant",
+			"database_id": "e0ad8bfc-9173-4b63-8378-0f1b6e4aa26f"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "MEDIA",
+			"bucket_name": "meeting-assistant-media"
+		}
+	],
+	"workflows": [
+		{
+			"binding": "PROCESS",
+			"name": "meeting-processing",
+			"class_name": "MeetingProcessing"
+		}
+	],
+	"ai": {
+		"binding": "AI"
+	},
+	"vars": {
+		"PUBLIC_ORIGIN": "https://meeting-assistant.maaoyuya.workers.dev"
+	}
+}

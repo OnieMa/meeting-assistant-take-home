@@ -1,85 +1,59 @@
-# Meeting Assistant — Engineering Take-Home
+# Meeting Assistant
 
-Build and deploy a Web meeting assistant on **Cloudflare** that records or accepts audio, transcribes it, and turns it into useful meeting notes in Chinese and English.
+Record or upload a conversation and get a speaker-labeled transcript alongside editable meeting notes in Simplified Chinese and English. An access code opens the same workspace on another device, including saved notes and original audio.
 
-This assignment is for **full-stack engineers and AI application engineers**. Product delivery, AI implementation quality, and engineering quality are equally important.
+[Product specification](SPEC.md) · [Assignment](ASSIGNMENT.md) · [Submission guide](SUBMISSION.md)
 
-- **Suggested effort:** 1–2 hours. AI-assisted development is welcome.
-- **Submission deadline:** within 2 days of receiving the assignment.
-- **Partial submissions are welcome:** clearly explain unfinished features and your tradeoffs.
+## Run locally
 
-Preserve any co-author attribution your AI development tools automatically add to Git commits, such as `Co-authored-by` trailers.
+Use Node.js 22.12 or newer. Run the following from the repository.
 
-## Core requirements
+```sh
+npm ci
+npm run dev
+```
 
-### 1. Audio input and transcription
+Open the localhost URL printed by Wrangler. The default is `http://localhost:8787`. No cloud credentials are required for this mode. It exercises the real UI, Worker API, local D1 and R2, and Workflow. Transcripts and note translations are labeled examples. Chrome, Firefox and Safari require a secure origin for microphone access. Localhost qualifies.
 
-- Support uploading existing audio files and recording through the browser microphone.
-- Transcribe after recording stops. Displaying a live transcript during recording is not required.
-- Support Mandarin Chinese, English, and mixed Chinese–English speech.
-- Display the transcript and distinguish different speakers, for example, “Speaker 1” and “Speaker 2.”
-- Find and process your own multi-speaker audio recording, approximately 90 minutes long. See [Test Audio](TEST_RECORDING.md).
-- **Optional:** timestamps for individual utterances.
+```sh
+npm run check
+npm test
+npm run build
+```
 
-### 2. Meeting notes in Chinese and English
+## Deploy to Cloudflare
 
-Generate **both Chinese and English versions** of:
+1. Log in with `npx wrangler login`. Enable R2 Standard in the Cloudflare dashboard and set up a `workers.dev` subdomain if the account does not already have one.
+2. Create the resources with `npx wrangler d1 create meeting-assistant` and `npx wrangler r2 bucket create meeting-assistant-media`. Replace the placeholder D1 ID in `wrangler.jsonc` with the ID Wrangler prints. Use a unique Worker or resource name if any is already in use in the account.
+3. Add `"vars": { "PUBLIC_ORIGIN": "https://meeting-assistant.<subdomain>.workers.dev" }` at the root of `wrangler.jsonc`, replacing it with the exact deployed HTTPS origin. Keep the R2 bucket private. Use the Workers Free plan for the initial deployment.
+4. Apply the database migration and deploy. Configure the two secrets in the Worker after its first deployment. The job secret authorizes provider callbacks and expiring audio URLs. Enter the Deepgram key through the CLI prompt.
 
-- A brief summary.
-- Main discussion topics.
-- Confirmed decisions.
-- Action items: the task, owner, and deadline, when mentioned in the recording.
-- Unresolved questions.
+```sh
+npx wrangler d1 migrations apply DB --remote
+npm run deploy
+openssl rand -hex 32 | npx wrangler secret put JOB_SECRET
+npx wrangler secret put DEEPGRAM_API_KEY
+```
 
-Only include information supported by the recording. **If something was not mentioned, omit it. Do not let the AI invent missing content, owners, or deadlines.** Opinions, predictions, and proposals should retain their meaning rather than becoming confirmed decisions or commitments.
+Open the deployed URL, create a workspace, and copy its access code before dismissing it. Upload a short clip first and confirm it produces actual transcribed speech. The production configuration uses real providers. `APP_MODE=demo` is set by the local start script only.
 
-Let users manually edit the generated notes in either language. Changes to one language version must automatically update the other version.
+## Architecture and model choices
 
-### 3. Bilingual interface
+| Service | Responsibility |
+| --- | --- |
+| Workers Static Assets and Worker | Serve the browser UI and same-origin API. Handle sessions, ownership checks, streaming uploads, byte-range audio playback and edit requests. |
+| D1 | Store workspace and session hashes, meeting state, and both versions of the notes. A revision check prevents simultaneous edits from silently overwriting each other. |
+| Private R2 Standard | Store original audio, provider callbacks, and paged utterances. A job-scoped, expiring URL gives Deepgram temporary access to its input audio. |
+| Cloudflare Workflows | Submit a transcription, await the saved callback, normalize its utterances in bounded windows, and generate and publish the notes. |
+| Deepgram Nova-3 | Batch transcription with multilingual recognition and a diarization model for separating speakers without decoding or chopping the audio at the Worker. |
+| Workers AI Qwen 3.8 27B | Extract evidence from slices of long transcripts, combine evidence into aligned bilingual notes, and translate user edits on save. The prompts distinguish decisions from suggestions and instruct the model to omit unsupported fields. |
 
-The Web interface must let users switch between Chinese and English. The generated meeting notes must provide both language versions regardless of the selected interface language.
+[Deepgram multilingual docs](https://developers.deepgram.com/docs/nova-3-language-prompting) · [Deepgram callback docs](https://developers.deepgram.com/docs/callback) · [Workers AI model](https://developers.cloudflare.com/workers-ai/models/qwen3.8-27b/)
 
-### 4. Access codes and meeting history
+## Verification and limits
 
-- No registration or login flow is required.
-- **One access code represents one user.** Entering the same code on another device must retrieve that user’s meeting history.
-- Save the original recordings, transcripts, and meeting notes, including edits.
-- Support playing back saved recordings in the Web application.
-
-Choose the implementation and Cloudflare storage services that fit your application.
-
-## Bonus: real-time AI assistance
-
-During a meeting, let the user ask questions or request ideas from an AI assistant that uses **what has already been discussed in the current meeting**.
-
-The bonus feature should support:
-
-- Both a spoken wake phrase and a button to activate the assistant.
-- Both visible text and spoken audio for the assistant’s replies.
-- Replies in the language of the user’s question.
-
-This is a bonus feature, separate from the core requirement to transcribe after recording stops.
-
-## Technology, deployment, and AI services
-
-**Use Cloudflare for the application's complete deployment and compute.** Host the frontend on Cloudflare, run the backend and any background processing on Cloudflare, and persist application data and recordings in Cloudflare services. You may choose the Cloudflare services that best fit your implementation.
-
-Choose your own frontend and backend stack that can be deployed on Cloudflare. You are free to choose speech models, language models, and APIs. External AI APIs are allowed and must be called from your Cloudflare backend. **Explain why you selected the models and services you used.**
-
-You are responsible for your own provider accounts, API keys, and usage costs. Keep API keys out of the repository and browser-exposed code.
-
-Automated tests are not required.
-
-## Test Audio
-
-Find a **multi-speaker audio recording approximately 90 minutes long** and use the full recording to test your application. Include the **original audio file** with your submission, as an attachment or an accessible download link.
-
-## How to submit
-
-See [SUBMISSION.md](SUBMISSION.md). In short: click **"Use this template"** to create your own **private repo**, build and deploy your app on **Cloudflare**, invite **`AIDevSkyVision`**, and email us your repo link, README, deployed app URL, access code, original test audio, and a **face-visible demo video approximately 3–5 minutes long**.
-
-The video must demonstrate your application and show the relevant pages in your **Cloudflare dashboard** while you explain the project's architecture and how the services work together.
-
-Send your submission to [aidevelopment@skyvisioninsurance.com](mailto:aidevelopment@skyvisioninsurance.com). [Loom](https://www.loom.com/) is recommended for recording.
-
-See [Evaluation Focus](EVALUATION.md) for what we look for.
+- The local demo flow checks browser upload and microphone recording, playback and seeking, workspace reuse in separate browser sessions, workspace isolation, language switching, and version conflicts during edits.
+- The deployed Free Worker processed the original 87,300,455-byte [Changelog Interviews #669 MP3](https://cdn.changelog.com/uploads/podcast/669/the-changelog-669.mp3). After upload, the Workflow finished in approximately 5 minutes 34 seconds. All 45 transcript pages were read back, with 1,582 utterances, five diarization labels, and a final utterance ending at 89:58.825. Both note versions and audio range playback were verified. A spot check against the [episode page](https://changelog.com/podcast/669) found that the notes used “Jared” for host Jerod. Speaker labels are model estimates.
+- A separate 60-second extract from [Mandarin Monkey #469](https://shows.acast.com/mandarin-monkey-podcast/episodes/469-she-was-heartbroken-real-mandarin-english-conversation) produced a transcript containing both Mandarin and English and notes in both languages. Edits from each language successfully translated and saved to the other on the live Worker.
+- The local mode does not measure Cloudflare Free CPU limits or validate provider output. Validate both after configuring live credentials. Large uncompressed files above the 95 MB application limit must be compressed before uploading.
+- An access code grants access to the corresponding history. Store it securely and share it only with intended reviewers. The app does not offer code recovery, content deletion, or live assistance. Before exposing it to general use, configure account-side provider quotas and a storage retention policy.
